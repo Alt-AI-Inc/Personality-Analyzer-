@@ -1,0 +1,244 @@
+{
+  "data_sources": [
+    {
+      "name": "personal_whatsapp_chats",
+      "source": "whatsapp",
+      "type": "chat", 
+      "path": "data/WhatsApp.json",
+      "category": "personal",
+      "description": "Private WhatsApp messages with friends and family",
+      "communication_traits": {
+        "formality": "very_casual",
+        "authenticity": "high",
+        "filter_level": "minimal",
+        "emotional_openness": "high",
+        "abbreviations": "common",
+        "emojis": "frequent"
+      }
+    },
+    {
+      "name": "social_twitter_posts",
+      "source": "twitter", 
+      "type": "posts",
+      "path": "data/personality_tweets_condensed.json",
+      "category": "professional",
+      "description": "Public Twitter posts showing personal opinions and interests",
+      "communication_traits": {
+        "formality": "casual",
+        "authenticity": "medium",
+        "filter_level": "social_media_filter",
+        "emotional_openness": "medium",
+        "abbreviations": "some",
+        "emojis": "moderate"
+      }
+    },
+    {
+      "name": "professional_linkedin_messages",
+      "source": "linkedin",
+      "type": "chat", 
+      "path": "data/linkedin_messages_simple.json",
+      "category": "professional",
+      "description": "LinkedIn direct messages and professional networking conversations",
+      "communication_traits": {
+        "formality": "semi_formal",
+        "authenticity": "high",
+        "filter_level": "professional_context",
+        "emotional_openness": "medium",
+        "abbreviations": "rare",
+        "emojis": "minimal"
+      }
+    },
+    {
+      "name": "professional_linkedin_posts",
+      "source": "linkedin",
+      "type": "articles", 
+      "path": "data/linkedin_posts_simple.json",
+      "category": "professional",
+      "description": "LinkedIn posts and professional thought leadership content",
+      "communication_traits": {
+        "formality": "formal",
+        "authenticity": "medium",
+        "filter_level": "professional_curation",
+        "emotional_openness": "medium",
+        "abbreviations": "rare",
+        "emojis": "minimal"
+      }
+    },
+    {
+      "name": "professional_slack_messages", 
+      "source": "slack",
+      "type": "chat",
+      "path": "data/slack_messages.json", 
+      "category": "professional",
+      "description": "Work-related Slack conversations and discussions",
+      "communication_traits": {
+        "formality": "semi_formal",
+        "authenticity": "high",
+        "filter_level": "professional_context",
+        "emotional_openness": "medium", 
+        "abbreviations": "work_specific",
+        "emojis": "contextual"
+      }
+    },
+    {
+      "name": "professional_email_threads",
+      "source": "email",
+      "type": "correspondence",
+      "path": "data/email_threads.json",
+      "category": "professional", 
+      "description": "Professional email correspondence and threads",
+      "communication_traits": {
+        "formality": "very_formal",
+        "authenticity": "medium",
+        "filter_level": "high_professional",
+        "emotional_openness": "very_low",
+        "abbreviations": "none",
+        "emojis": "none"
+      }
+    },
+    {
+      "name": "personal_blog_articles",
+      "source": "blog",
+      "type": "articles",
+      "path": "data/personal_blog_posts.json", 
+      "category": "personal",
+      "description": "Personal blog posts and long-form writing",
+      "communication_traits": {
+        "formality": "semi_formal",
+        "authenticity": "high",
+        "filter_level": "editorial",
+        "emotional_openness": "high",
+        "abbreviations": "minimal",
+        "emojis": "rare"
+      }
+    }
+  ],
+  "facet_definitions": {
+    "professional": {
+      "description": "Work-related communication showing professional personality traits",
+      "key_traits": [
+        "conscientiousness_amplified",
+        "agreeableness_work_context", 
+        "extraversion_leadership",
+        "neuroticism_stress_management",
+        "openness_innovation"
+      ],
+      "context_considerations": [
+        "Hierarchy and power dynamics",
+        "Team collaboration patterns",
+        "Decision-making style",
+        "Conflict resolution approach",
+        "Goal orientation and achievement focus"
+      ]
+    },
+    "personal": {
+      "description": "Private and social communication showing authentic personality traits", 
+      "key_traits": [
+        "neuroticism_authentic",
+        "agreeableness_interpersonal",
+        "extraversion_social", 
+        "openness_interests",
+        "conscientiousness_lifestyle"
+      ],
+      "context_considerations": [
+        "Relationship dynamics",
+        "Emotional expression patterns",
+        "Leisure and hobby preferences", 
+        "Social interaction style",
+        "Personal values and beliefs"
+      ]
+    }
+  },
+  "communication_type_calibrations": {
+    "chat": {
+      "characteristics": "Real-time, conversational, reactive",
+      "authenticity_modifier": 1.2,
+      "spontaneity_indicator": "high",
+      "editing_level": "minimal"
+    },
+    "posts": {
+      "characteristics": "Curated, public-facing, considered",
+      "authenticity_modifier": 0.8,
+      "spontaneity_indicator": "medium", 
+      "editing_level": "moderate"
+    },
+    "articles": {
+      "characteristics": "Structured, deliberate, polished",
+      "authenticity_modifier": 0.7,
+      "spontaneity_indicator": "low",
+      "editing_level": "high"
+    },
+    "correspondence": {
+      "characteristics": "Formal, purposeful, structured", 
+      "authenticity_modifier": 0.6,
+      "spontaneity_indicator": "very_low",
+      "editing_level": "very_high"
+    }
+  },
+  "source_specific_calibrations": {
+    "whatsapp": {
+      "platform_bias": "authentic_expression",
+      "trait_amplifications": {
+        "neuroticism": 0.1,
+        "agreeableness": 0.2
+      },
+      "trait_suppressions": {},
+      "communication_markers": ["casual_language", "abbreviations", "emojis", "immediate_reactions"]
+    },
+    "twitter": {
+      "platform_bias": "performative_expression", 
+      "trait_amplifications": {
+        "extraversion": 0.4,
+        "openness": 0.3,
+        "neuroticism": 0.2
+      },
+      "trait_suppressions": {
+        "agreeableness": 0.1
+      },
+      "communication_markers": ["public_performance", "brevity", "engagement_seeking", "opinion_sharing"]
+    },
+    "linkedin": {
+      "platform_bias": "professional_curation",
+      "trait_amplifications": {
+        "conscientiousness": 0.5,
+        "agreeableness": 0.3,
+        "openness": 0.2
+      },
+      "trait_suppressions": {
+        "neuroticism": 0.4
+      },
+      "communication_markers": ["professional_language", "achievement_focus", "network_building", "thought_leadership"]
+    },
+    "slack": {
+      "platform_bias": "work_authentic",
+      "trait_amplifications": {
+        "conscientiousness": 0.2
+      },
+      "trait_suppressions": {
+        "neuroticism": 0.1
+      },
+      "communication_markers": ["team_dynamics", "problem_solving", "quick_decisions", "collaborative_tone"]
+    },
+    "email": {
+      "platform_bias": "formal_professional",
+      "trait_amplifications": {
+        "conscientiousness": 0.3,
+        "agreeableness": 0.4
+      },
+      "trait_suppressions": {
+        "neuroticism": 0.5,
+        "extraversion": 0.2
+      },
+      "communication_markers": ["formal_structure", "deliberate_phrasing", "diplomatic_language", "clear_objectives"]
+    },
+    "blog": {
+      "platform_bias": "reflective_expression",
+      "trait_amplifications": {
+        "openness": 0.4,
+        "conscientiousness": 0.2
+      },
+      "trait_suppressions": {},
+      "communication_markers": ["detailed_thoughts", "structured_arguments", "personal_insights", "extended_reflection"]
+    }
+  }
+}
