@@ -1,0 +1,12 @@
+BFI Probe Quick-Check Bundle (20250922_142243)
+
+Files:
+- bfi_probe_20250922_142243.py : main script
+- my_samples_20250922_142243.txt : paste your writing samples here (optional)
+- README_20250922_142243.txt : this file
+
+Quick start:
+1) pip install openai pandas numpy
+2) export OPENAI_API_KEY="sk-..."
+3) python bfi_probe_20250922_142243.py --model gpt-4o-mini --run both --target "O:high,C:high,E:high,A:high,N:low"
+4) (Optional as-if) python bfi_probe_20250922_142243.py --model gpt-4o-mini --run both --target "O:high,C:high,E:high,A:high,N:low" --samples my_samples_20250922_142243.txt
