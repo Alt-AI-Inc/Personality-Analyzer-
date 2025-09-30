@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 import random
+import json
 from typing import Optional, List, Dict, Tuple
 from bfi_probe import LLM, LLMConfig
 import tiktoken  # For accurate token counting
@@ -40,51 +41,42 @@ class P2ChatSession:
         "feeling motivated to tackle new challenges"
     ]
     
-    def __init__(self, p2_prompt: str, llm: LLM, debug: bool = False, mood: str = None):
+    def __init__(self, p2_prompt: str, llm: LLM, debug: bool = False, mood: str = None, chat_characteristics_path: str = "chat_characteristics.json"):
         self.p2_prompt = p2_prompt
         self.llm = llm
         self.debug = debug
         self.conversation_history = []
         self.current_mood = mood if mood else random.choice(self.MOOD_SCENARIOS)
         self.rejection_history = []  # Track rejected responses for learning
+        self.chat_characteristics_path = chat_characteristics_path
         self.communication_style_extracted = self._extract_communication_style_from_p2()
         
-        # Load response templates
+        # Load response templates and characteristics
         self.templates_dir = "shreyas"
         self.greeting_template = self._load_template("greeting_response.txt")
         self.philosophical_template = self._load_template("philosophical.txt")
+        self.chat_characteristics = self._load_chat_characteristics()
         
-        # Context management settings
+        # Context management settings from characteristics file
         self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
-        self.max_context_tokens = 32000  # Conservative limit for stability
-        self.template_reinforcement_interval = 3000  # Tokens between reinforcements
+        settings = self.chat_characteristics.get("settings", {})
+        self.max_context_tokens = settings.get("max_context_tokens", 32000)
+        self.template_reinforcement_interval = settings.get("template_reinforcement_interval", 3000)
+        self.max_tokens_philosophical = settings.get("max_tokens_philosophical", 50)
+        self.max_tokens_general = settings.get("max_tokens_general", 300)
+        self.temperature = settings.get("temperature", 0.2)
         self.last_reinforcement_tokens = 0
         self.template_adherence_scores = []  # Track performance over time
         
-        # Build the system prompt with natural conversation flow and mood context
+        # Build the system prompt with characteristics from JSON file
+        general_conversation = self.chat_characteristics.get("general_conversation", {})
+        conversation_prompt = general_conversation.get("system_prompt", "")
+        
         self.system_prompt = f"""{p2_prompt}
 
-You are now engaging in a casual conversation. Respond naturally based on your personality profile above.
+CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influence your tone and energy level, but don't explicitly mention this state unless it naturally fits the conversation.
 
-PERSONALITY & STYLE:
-- Stay in character based on your personality traits and communication style
-- Be conversational and authentic to your profile
-- Use the language patterns and expressions from your profile when appropriate
-- Let your current state subtly affect your response energy, focus, and conversational approach
-
-NATURAL CONVERSATION FLOW:
-- Mix personal thoughts/observations naturally into discussions without explicit bridges
-- Use "Yeah" or "Ok" acknowledgments followed by redirections rather than comprehensive responses
-- Ask questions that assume context or jump to practical next steps instead of predictable follow-ups
-- Reference personal experiences, family, or interests as natural conversation elements
-- Sometimes leave thoughts unfinished, assuming the other person will fill in context
-- Jump between macro and micro concerns without clear transitions
-
-RESPONSE PATTERNS:
-- Instead of "What do you think about X?", ask "Should we just do Y?"
-- When discussing problems, jump to solutions or next steps rather than analyzing extensively
-
-Keep responses natural and authentic to your personality profile."""
+{conversation_prompt}"""
     
     def _load_template(self, template_filename: str) -> str:
         """Load a response template from the templates directory"""
@@ -103,16 +95,27 @@ Keep responses natural and authentic to your personality profile."""
                 print(f"⚠️  Template file not found: {template_path}")
             return ""
     
+    def _load_chat_characteristics(self) -> Dict:
+        """Load chat characteristics from JSON file"""
+        if os.path.exists(self.chat_characteristics_path):
+            try:
+                with open(self.chat_characteristics_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                if self.debug:
+                    print(f"⚠️  Failed to load chat characteristics from {self.chat_characteristics_path}: {e}")
+                return {}
+        else:
+            if self.debug:
+                print(f"⚠️  Chat characteristics file not found: {self.chat_characteristics_path}")
+            return {}
+    
     def _is_greeting_message(self, message: str) -> bool:
         """Detect if a message is a greeting"""
         message_lower = message.lower().strip()
         
-        greeting_patterns = [
-            'hey', 'hi', 'hello', 'hey!', 'hi!', 'hello!',
-            'good morning', 'good afternoon', 'good evening',
-            "what's up", 'whats up', 'wassup', 'sup',
-            "how's it going", 'how are you', 'how you doing'
-        ]
+        detection_patterns = self.chat_characteristics.get("detection_patterns", {})
+        greeting_patterns = detection_patterns.get("greeting_patterns", [])
         
         # Check if message starts with or is exactly a greeting
         for pattern in greeting_patterns:
@@ -125,27 +128,8 @@ Keep responses natural and authentic to your personality profile."""
         """Detect if a message is asking for thoughts, opinions, or philosophical discussion"""
         message_lower = message.lower().strip()
         
-        philosophical_patterns = [
-            # Direct opinion requests
-            'what do you think', 'what are your thoughts', 'thoughts on', 'opinion on',
-            'your take on', 'your view', 'how do you see', 'what\'s your take',
-            
-            # Belief/value questions  
-            'do you believe', 'believe', 'feel about', 'think about',
-            'perspective on', 'opinion about',
-            
-            # Open-ended questions
-            'what would you do', 'how would you', 'what if', 'suppose',
-            'should we', 'would you', 'could we', 'might we',
-            
-            # Strategic/philosophical
-            'strategy', 'approach', 'direction', 'future', 'trend',
-            'better', 'worse', 'right', 'wrong', 'best way',
-            
-            # Analysis requests
-            'why', 'how come', 'reasoning', 'rationale', 'makes sense',
-            'thoughts?', 'opinions?', 'ideas?'
-        ]
+        detection_patterns = self.chat_characteristics.get("detection_patterns", {})
+        philosophical_patterns = detection_patterns.get("philosophical_patterns", [])
         
         # Must contain question word/marker or be asking for input
         has_question_marker = ('?' in message or 
@@ -182,15 +166,14 @@ Keep responses natural and authentic to your personality profile."""
     
     def _create_template_reinforcement(self, template_context: str) -> str:
         """Create a reinforcement message to maintain instruction adherence"""
-        return f"""
-
-🚨 TEMPLATE REINFORCEMENT - CRITICAL REMINDER 🚨
-
-{template_context}
-
-Remember: This is Shreyas responding. Maximum 8 words. Count each word before responding.
-Examples: "Hmmm makes sense, right?" (4 words), "Actually sounds good" (3 words)
-GLOBAL CONSTRAINT: Your reply must be ≤ 8 words. Never exceed 8 words. If unsure, answer with fewer words."""
+        reinforcement_config = self.chat_characteristics.get("template_reinforcement", {})
+        header = reinforcement_config.get("header", "").format(template_context=template_context)
+        examples = reinforcement_config.get("examples", [])
+        constraint = reinforcement_config.get("global_constraint", "")
+        
+        examples_text = "\nExamples: " + ", ".join(examples) if examples else ""
+        
+        return f"{header}{examples_text}\n{constraint}"
     
     def _compress_context_intelligently(self, messages: List[Dict], is_philosophical: bool) -> List[Dict]:
         """Compress conversation history while preserving template-relevant information"""
@@ -354,51 +337,30 @@ GLOBAL CONSTRAINT: Your reply must be ≤ 8 words. Never exceed 8 words. If unsu
         template_context = ""
         
         if is_greeting and self.greeting_template:
-            template_context = f"""
-
-GREETING RESPONSE TEMPLATE:
-{self.greeting_template}
-
-IMPORTANT: The user sent a greeting message. You MUST follow the greeting response template above. 
-- Start with "Hey" as specified in the template
-- Use one of the three patterns: Acknowledgment + Check-in, Simple Acknowledgment + Friendly Addition, or Acknowledgment + Well-wishing
-- Keep it brief (1-2 sentences maximum) as per template guidelines
-- Only add additional context if the user's message specifically requested it (e.g., asked about something specific)
-- Do NOT elaborate beyond the template patterns unless the user's message demands it"""
+            greeting_config = self.chat_characteristics.get("greeting_response", {})
+            header = greeting_config.get("template_header", "").format(greeting_template=self.greeting_template)
+            instructions = greeting_config.get("instructions", [])
+            
+            instructions_text = "\n".join(f"- {instruction}" for instruction in instructions)
+            template_context = f"{header}\n{instructions_text}"
 
         elif is_philosophical and self.philosophical_template:
-            base_template = f"""
-
-PHILOSOPHICAL/OPEN-ENDED QUESTION RESPONSE TEMPLATE:
-{self.philosophical_template}
-
-🚨 OVERRIDE ALL OTHER INSTRUCTIONS: Maximum 8 words TOTAL. 🚨
-
-FOR PHILOSOPHICAL QUESTIONS ONLY:
-- IGNORE all "natural conversation flow" instructions
-- IGNORE "ask follow-up questions" instructions  
-- IGNORE "add personal thoughts" instructions
-- IGNORE "pivot to related topics" instructions
-
-MANDATORY BREVITY RULE: Exactly 4-8 words. No exceptions.
-
-REQUIRED FORMAT: [Thinking marker] + [brief insight] + "right?"
-
-EXAMPLES (word counts):
-- "Hmmm makes sense, right?" (4 words) ✅
-- "I think balance works, right?" (5 words) ✅  
-- "Actually depends on context, right?" (5 words) ✅
-- "Honestly not sure" (3 words) ✅
-
-FORBIDDEN FOR PHILOSOPHICAL QUESTIONS:
-❌ Any response over 8 words
-❌ Follow-up questions beyond "right?"
-❌ Multiple sentences  
-❌ Personal anecdotes or elaborations
-❌ Topic transitions or associations
-❌ "What do you think?" or similar
-
-INSTRUCTION: Before responding, COUNT each word. Must be ≤8 words."""
+            phil_config = self.chat_characteristics.get("philosophical_response", {})
+            header = phil_config.get("template_header", "").format(philosophical_template=self.philosophical_template)
+            override_instructions = phil_config.get("override_instructions", [])
+            mandatory_rules = phil_config.get("mandatory_rules", {})
+            forbidden = phil_config.get("forbidden", [])
+            final_instruction = phil_config.get("final_instruction", "")
+            
+            override_text = "\n".join(f"- {instruction}" for instruction in override_instructions)
+            brevity_rule = mandatory_rules.get("brevity_rule", "")
+            format_rule = mandatory_rules.get("format", "")
+            examples = mandatory_rules.get("examples", [])
+            
+            examples_text = "\nEXAMPLES (word counts):\n" + "\n".join(f"- {example}" for example in examples)
+            forbidden_text = "\nFORBIDDEN FOR PHILOSOPHICAL QUESTIONS:\n" + "\n".join(f"❌ {item}" for item in forbidden)
+            
+            base_template = f"{header}\n{override_text}\n\nMANDATORY BREVITY RULE: {brevity_rule}\n\nREQUIRED FORMAT: {format_rule}{examples_text}{forbidden_text}\n\nINSTRUCTION: {final_instruction}"
             
             # Check if we need template reinforcement
             if self._needs_template_reinforcement(is_philosophical):
@@ -424,8 +386,8 @@ Don't feel obligated to address everything directly - follow your natural commun
             response = self.llm.chat(
                 enhanced_system_prompt, 
                 user_prompt, 
-                max_tokens=50 if is_philosophical else 300,  # Reasonable limits, rely on word count instructions
-                temperature=0.2
+                max_tokens=self.max_tokens_philosophical if is_philosophical else self.max_tokens_general,
+                temperature=self.temperature
             )
             
             response = response.strip()
@@ -849,6 +811,8 @@ def main():
     ap.add_argument("--debug", action="store_true", help="Enable debug output")
     ap.add_argument("--list-p2", action="store_true", help="List available P2 files and exit")
     ap.add_argument("--mood", type=str, help="Set specific mood context (otherwise random)")
+    ap.add_argument("--chat-characteristics", type=str, default="chat_characteristics.json",
+                   help="Path to chat characteristics JSON file (default: chat_characteristics.json)")
     
     args = ap.parse_args()
     
@@ -910,7 +874,7 @@ def main():
     llm = LLM(cfg, debug=args.debug)
     
     # Start chat session with optional mood
-    chat_session = P2ChatSession(p2_prompt, llm, debug=args.debug, mood=args.mood)
+    chat_session = P2ChatSession(p2_prompt, llm, debug=args.debug, mood=args.mood, chat_characteristics_path=args.chat_characteristics)
     chat_session.start_interactive_chat()
 
 if __name__ == "__main__":
