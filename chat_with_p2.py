@@ -9,8 +9,9 @@ import argparse
 import os
 import sys
 import random
-from typing import Optional
+from typing import Optional, List, Dict, Tuple
 from bfi_probe import LLM, LLMConfig
+import tiktoken  # For accurate token counting
 
 class P2ChatSession:
     """Interactive chat session with P2 personality profile"""
@@ -53,12 +54,17 @@ class P2ChatSession:
         self.greeting_template = self._load_template("greeting_response.txt")
         self.philosophical_template = self._load_template("philosophical.txt")
         
+        # Context management settings
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        self.max_context_tokens = 32000  # Conservative limit for stability
+        self.template_reinforcement_interval = 3000  # Tokens between reinforcements
+        self.last_reinforcement_tokens = 0
+        self.template_adherence_scores = []  # Track performance over time
+        
         # Build the system prompt with natural conversation flow and mood context
         self.system_prompt = f"""{p2_prompt}
 
 You are now engaging in a casual conversation. Respond naturally based on your personality profile above.
-
-CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influence your tone and energy level, but don't explicitly mention this state unless it naturally fits the conversation.
 
 PERSONALITY & STYLE:
 - Stay in character based on your personality traits and communication style
@@ -67,22 +73,16 @@ PERSONALITY & STYLE:
 - Let your current state subtly affect your response energy, focus, and conversational approach
 
 NATURAL CONVERSATION FLOW:
-- Don't always respond directly to what was said - sometimes build on implications or related aspects
-- Embrace non-sequitur transitions - shift topics based on loose associations rather than logical progression
 - Mix personal thoughts/observations naturally into discussions without explicit bridges
 - Use "Yeah" or "Ok" acknowledgments followed by redirections rather than comprehensive responses
 - Ask questions that assume context or jump to practical next steps instead of predictable follow-ups
 - Reference personal experiences, family, or interests as natural conversation elements
-- Make statements that assume shared knowledge - say "That thing we discussed" or jump to solutions
 - Sometimes leave thoughts unfinished, assuming the other person will fill in context
 - Jump between macro and micro concerns without clear transitions
 
 RESPONSE PATTERNS:
 - Instead of "What do you think about X?", ask "Should we just do Y?"
 - When discussing problems, jump to solutions or next steps rather than analyzing extensively
-- 20% of the time, pivot business topics to related personal experiences
-- 30% of the time, redirect questions with different but related questions
-- Sometimes respond with actions instead of reflections when asked for opinions
 
 Keep responses natural and authentic to your personality profile."""
     
@@ -159,8 +159,167 @@ Keep responses natural and authentic to your personality profile."""
         
         return has_question_marker and has_philosophical_pattern and is_substantial
 
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens in text using GPT-4 tokenizer"""
+        return len(self.tokenizer.encode(text))
+    
+    def _count_conversation_tokens(self) -> int:
+        """Count total tokens in current conversation history"""
+        total_tokens = 0
+        for message in self.conversation_history:
+            total_tokens += self._count_tokens(message["content"])
+        return total_tokens
+    
+    def _needs_template_reinforcement(self, is_philosophical: bool) -> bool:
+        """Check if we need to reinforce template instructions based on token count"""
+        if not is_philosophical:
+            return False
+            
+        current_tokens = self._count_conversation_tokens()
+        tokens_since_last = current_tokens - self.last_reinforcement_tokens
+        
+        return tokens_since_last >= self.template_reinforcement_interval
+    
+    def _create_template_reinforcement(self, template_context: str) -> str:
+        """Create a reinforcement message to maintain instruction adherence"""
+        return f"""
+
+🚨 TEMPLATE REINFORCEMENT - CRITICAL REMINDER 🚨
+
+{template_context}
+
+Remember: This is Shreyas responding. Maximum 8 words. Count each word before responding.
+Examples: "Hmmm makes sense, right?" (4 words), "Actually sounds good" (3 words)
+GLOBAL CONSTRAINT: Your reply must be ≤ 8 words. Never exceed 8 words. If unsure, answer with fewer words."""
+    
+    def _compress_context_intelligently(self, messages: List[Dict], is_philosophical: bool) -> List[Dict]:
+        """Compress conversation history while preserving template-relevant information"""
+        if len(messages) <= 6:  # Keep recent messages as-is
+            return messages
+            
+        # Always preserve system-level instructions and recent exchanges
+        recent_messages = messages[-5:]  # Last 5 messages
+        older_messages = messages[:-5]
+        
+        if is_philosophical:
+            # For philosophical questions, compress more aggressively but preserve template patterns
+            template_keywords = ['right?', 'hmmm', 'i think', 'makes sense', 'actually', 'honestly']
+            
+            preserved_messages = []
+            for msg in older_messages:
+                content_lower = msg["content"].lower()
+                
+                # Preserve messages that demonstrate good template adherence
+                if any(keyword in content_lower for keyword in template_keywords):
+                    preserved_messages.append(msg)
+                elif len(msg["content"].split()) <= 12:  # Keep brief responses
+                    preserved_messages.append(msg)
+                # Compress longer messages to summaries
+                elif msg["role"] == "user":
+                    preserved_messages.append(msg)  # Keep user messages
+                else:
+                    # Summarize long AI responses
+                    summary = f"[Responded briefly with thinking marker]"
+                    preserved_messages.append({"role": "assistant", "content": summary})
+            
+            return preserved_messages + recent_messages
+        else:
+            # Standard compression for non-philosophical conversations
+            return older_messages[-3:] + recent_messages  # Keep last 8 messages total
+
+    def _compress_assistant_response(self, response: str, is_philosophical_context: bool) -> str:
+        """Compress assistant responses to prevent verbosity reinforcement in conversation history"""
+        word_count = len(response.split())
+        
+        if not is_philosophical_context or word_count <= 12:
+            # Keep short responses as-is
+            return response
+        
+        # For verbose philosophical responses, extract key components
+        response_lower = response.lower()
+        
+        # Extract thinking marker
+        thinking_markers = ['hmmm', 'i think', 'actually', 'honestly', 'makes sense', 'yeah', 'ok', 'sure', 'cool', 'got it']
+        thinking_marker = None
+        for marker in thinking_markers:
+            if marker in response_lower:
+                thinking_marker = marker.capitalize()
+                break
+        
+        # Check if it has question ending
+        has_question = response.rstrip().endswith('?') or 'right?' in response_lower
+        
+        # Extract core topic/subject (first few meaningful words after thinking marker)
+        words = response.split()
+        core_words = []
+        skip_words = {'i', 'think', 'we', 'should', 'can', 'will', 'would', 'could', 'the', 'a', 'an', 'is', 'are', 'that', 'this'}
+        
+        for word in words[1:6]:  # Look at words after thinking marker
+            if word.lower().rstrip('.,?!') not in skip_words and len(word) > 2:
+                core_words.append(word.rstrip('.,?!'))
+                if len(core_words) >= 2:  # Get 2-3 key words
+                    break
+        
+        # Reconstruct compressed response
+        if thinking_marker and core_words:
+            if has_question:
+                compressed = f"{thinking_marker}, {' '.join(core_words)}, right?"
+            else:
+                compressed = f"{thinking_marker}, {' '.join(core_words)}"
+        else:
+            # Fallback: use first 8 words
+            compressed = ' '.join(words[:8])
+            if not compressed.rstrip().endswith('?') and has_question:
+                compressed += ", right?"
+        
+        return compressed
+
+    def _score_template_adherence(self, response: str) -> float:
+        """Score how well a response adheres to the philosophical template (0-3 scale)"""
+        score = 0.0
+        response_lower = response.lower()
+        word_count = len(response.split())
+        
+        # Check for thinking markers (1 point)
+        thinking_markers = ['hmmm', 'i think', 'actually', 'honestly', 'makes sense', 'yeah', 'ok', 'sure', 'cool', 'got it']
+        if any(marker in response_lower for marker in thinking_markers):
+            score += 1.0
+        
+        # Check for question patterns (1 point) 
+        question_patterns = ['right?', 'yeah?', '?']
+        if any(pattern in response_lower for pattern in question_patterns):
+            score += 1.0
+        
+        # Check for brevity (1 point) - 12 words or less as per Shreyas style
+        if word_count <= 12:
+            score += 1.0
+        elif word_count <= 15:
+            score += 0.5  # Partial credit for somewhat brief
+        
+        return score
+
+    def get_adherence_stats(self) -> Dict:
+        """Get template adherence statistics for monitoring"""
+        if not self.template_adherence_scores:
+            return {"avg_score": 0, "total_responses": 0, "recent_trend": "N/A"}
+        
+        recent_scores = self.template_adherence_scores[-10:]  # Last 10 responses
+        early_scores = self.template_adherence_scores[:10] if len(self.template_adherence_scores) >= 10 else self.template_adherence_scores
+        
+        avg_recent = sum(recent_scores) / len(recent_scores)
+        avg_early = sum(early_scores) / len(early_scores)
+        trend = "improving" if avg_recent > avg_early else "declining" if avg_recent < avg_early else "stable"
+        
+        return {
+            "avg_score": sum(self.template_adherence_scores) / len(self.template_adherence_scores),
+            "recent_avg": avg_recent,
+            "total_responses": len(self.template_adherence_scores),
+            "trend": trend,
+            "current_tokens": self._count_conversation_tokens()
+        }
+
     def chat_response(self, user_message: str) -> str:
-        """Get AI response to user message"""
+        """Get AI response to user message with intelligent context management"""
         
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": user_message})
@@ -168,16 +327,25 @@ Keep responses natural and authentic to your personality profile."""
         # Check message type first to determine context size
         is_philosophical = self._is_philosophical_question(user_message)
         
-        # Build conversation context - include all history but rely on token limits for brevity
-        recent_history = self.conversation_history[-10:]
+        # Intelligent context management based on token count and conversation length
+        current_tokens = self._count_conversation_tokens()
         
-        # Create the conversation prompt
+        if current_tokens > self.max_context_tokens:
+            # Apply intelligent compression
+            managed_history = self._compress_context_intelligently(self.conversation_history, is_philosophical)
+        else:
+            # Use standard windowing for shorter conversations
+            managed_history = self.conversation_history[-10:]
+        
+        # Create the conversation prompt from managed history with response compression
         conversation = []
-        for msg in recent_history:
+        for msg in managed_history:
             if msg["role"] == "user":
                 conversation.append(f"You: {msg['content']}")
             else:
-                conversation.append(f"Me: {msg['content']}")
+                # Compress assistant responses to prevent verbosity reinforcement
+                compressed_response = self._compress_assistant_response(msg['content'], is_philosophical)
+                conversation.append(f"Me: {compressed_response}")
         
         conversation_context = "\n".join(conversation)
         
@@ -199,28 +367,47 @@ IMPORTANT: The user sent a greeting message. You MUST follow the greeting respon
 - Do NOT elaborate beyond the template patterns unless the user's message demands it"""
 
         elif is_philosophical and self.philosophical_template:
-            template_context = f"""
+            base_template = f"""
 
 PHILOSOPHICAL/OPEN-ENDED QUESTION RESPONSE TEMPLATE:
 {self.philosophical_template}
 
-🚨 CRITICAL: COUNT YOUR WORDS! Maximum 8 words TOTAL in your response. 🚨
+🚨 OVERRIDE ALL OTHER INSTRUCTIONS: Maximum 8 words TOTAL. 🚨
 
-REQUIRED FORMAT: [Thinking marker] + [brief thought] + "right?"
+FOR PHILOSOPHICAL QUESTIONS ONLY:
+- IGNORE all "natural conversation flow" instructions
+- IGNORE "ask follow-up questions" instructions  
+- IGNORE "add personal thoughts" instructions
+- IGNORE "pivot to related topics" instructions
+
+MANDATORY BREVITY RULE: Exactly 4-8 words. No exceptions.
+
+REQUIRED FORMAT: [Thinking marker] + [brief insight] + "right?"
 
 EXAMPLES (word counts):
 - "Hmmm makes sense, right?" (4 words) ✅
-- "I think so, yeah" (4 words) ✅  
-- "Actually sounds good, right?" (4 words) ✅
+- "I think balance works, right?" (5 words) ✅  
+- "Actually depends on context, right?" (5 words) ✅
 - "Honestly not sure" (3 words) ✅
 
-FORBIDDEN:
+FORBIDDEN FOR PHILOSOPHICAL QUESTIONS:
 ❌ Any response over 8 words
-❌ Explanations or elaborations
-❌ Multiple sentences
-❌ "I think" + long elaboration
+❌ Follow-up questions beyond "right?"
+❌ Multiple sentences  
+❌ Personal anecdotes or elaborations
+❌ Topic transitions or associations
+❌ "What do you think?" or similar
 
-INSTRUCTION: Before responding, COUNT each word. If over 8 words, DELETE words until under 8."""
+INSTRUCTION: Before responding, COUNT each word. Must be ≤8 words."""
+            
+            # Check if we need template reinforcement
+            if self._needs_template_reinforcement(is_philosophical):
+                template_context = self._create_template_reinforcement(base_template)
+                self.last_reinforcement_tokens = current_tokens
+                if self.debug:
+                    print(f"🔄 Template reinforcement activated at {current_tokens} tokens")
+            else:
+                template_context = base_template
         
         # Build system prompt with any previous feedback context
         enhanced_system_prompt = self.system_prompt + self._build_rejection_context() + template_context
@@ -229,7 +416,7 @@ INSTRUCTION: Before responding, COUNT each word. If over 8 words, DELETE words u
 
 {conversation_context}
 
-Respond naturally based on your personality and conversation flow patterns above. 
+Respond based on your personality and conversation flow patterns above. 
 Don't feel obligated to address everything directly - follow your natural communication style."""
 
         try:
@@ -238,7 +425,7 @@ Don't feel obligated to address everything directly - follow your natural commun
                 enhanced_system_prompt, 
                 user_prompt, 
                 max_tokens=50 if is_philosophical else 300,  # Reasonable limits, rely on word count instructions
-                temperature=0.8
+                temperature=0.2
             )
             
             response = response.strip()
@@ -252,6 +439,15 @@ Don't feel obligated to address everything directly - follow your natural commun
                     if not response.lower().endswith(('right?', 'yeah?', '?')):
                         words.append("right?")
                     response = " ".join(words)
+            
+            # Monitor template adherence for philosophical responses
+            if is_philosophical:
+                adherence_score = self._score_template_adherence(response)
+                self.template_adherence_scores.append(adherence_score)
+                
+                if self.debug:
+                    print(f"📊 Template adherence score: {adherence_score:.2f}/3.0")
+                    print(f"📈 Average over last 10: {sum(self.template_adherence_scores[-10:]) / min(len(self.template_adherence_scores), 10):.2f}")
             
             # Add AI response to history and return
             self.conversation_history.append({"role": "assistant", "content": response})
