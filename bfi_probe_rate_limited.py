@@ -12,6 +12,8 @@ import time
 from typing import Dict, List, Optional
 from bfi_probe_faceted import cross_facet_comparison
 from faceted_personality import FacetedPersonalitySystem
+from compressed_p2_generator import CompressedP2Generator
+from smart_p2_generator import SmartP2Generator
 
 # Import everything we need from bfi_probe
 from bfi_probe import LLM, LLMConfig, BFI_S_ITEMS, administer, score
@@ -140,6 +142,8 @@ def run_rate_limited_assessment():
     ap.add_argument("--rpm", type=int, default=15, help="Requests per minute limit")
     ap.add_argument("--outdir", type=str, default="results")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--compression", type=str, choices=["none", "smart", "aggressive"], default="none", 
+                   help="P2 compression level: none (full), smart (balanced), aggressive (minimal)")
     
     args = ap.parse_args()
     
@@ -147,6 +151,7 @@ def run_rate_limited_assessment():
     print(f"   Model: {args.model}")
     print(f"   Rate limit: {args.rpm} requests/minute")
     print(f"   Facet(s): {args.facet}")
+    print(f"   Compression: {args.compression.upper()} {'🧠' if args.compression == 'smart' else '🗜️' if args.compression == 'aggressive' else '📝'}")
     
     # Initialize rate-limited LLM
     cfg = LLMConfig(model=args.model, temperature=0.2, max_tokens=128)
@@ -163,8 +168,17 @@ def run_rate_limited_assessment():
     estimated_time = (estimated_requests / args.rpm) * 60  # Convert to seconds
     print(f"   Estimated time: {estimated_time/60:.1f} minutes ({estimated_requests} requests)")
     
-    # Initialize faceted personality system
-    fps = FacetedPersonalitySystem()
+    # Initialize faceted personality system based on compression level
+    if args.compression == "aggressive":
+        fps = CompressedP2Generator()
+        print("🗜️  Using aggressive compression (minimal quality, maximum token savings)")
+    elif args.compression == "smart":
+        fps = SmartP2Generator()
+        print("🧠 Using smart compression (balanced quality vs token efficiency)")
+    else:
+        fps = FacetedPersonalitySystem()
+        print("📝 Using full P2 generator (maximum quality, highest token usage)")
+    
     sources = fps.load_available_sources()
     
     if not sources:
@@ -182,7 +196,14 @@ def run_rate_limited_assessment():
     try:
         if args.facet in ["personal", "both"] and facet_sources.get("personal"):
             print(f"\n🎭 Generating Personal facet P2 profile...")
-            personal_profile = fps.generate_facet_p2(llm, "personal", facet_sources["personal"])
+            
+            # Use appropriate generation method based on compression level
+            if args.compression == "aggressive":
+                personal_profile = fps.generate_compressed_facet_p2(llm, "personal", facet_sources["personal"])
+            elif args.compression == "smart":
+                personal_profile = fps.generate_smart_facet_p2(llm, "personal", facet_sources["personal"])
+            else:
+                personal_profile = fps.generate_facet_p2(llm, "personal", facet_sources["personal"])
             
             print(f"✅ Personal P2 generated ({len(personal_profile.p2_prompt)} chars)")
             print(f"🔄 Running Personal BFI assessment (60 questions)...")
@@ -202,7 +223,14 @@ def run_rate_limited_assessment():
         
         if args.facet in ["professional", "both"] and facet_sources.get("professional"):
             print(f"\n💼 Generating Professional facet P2 profile...")
-            professional_profile = fps.generate_facet_p2(llm, "professional", facet_sources["professional"])
+            
+            # Use appropriate generation method based on compression level
+            if args.compression == "aggressive":
+                professional_profile = fps.generate_compressed_facet_p2(llm, "professional", facet_sources["professional"])
+            elif args.compression == "smart":
+                professional_profile = fps.generate_smart_facet_p2(llm, "professional", facet_sources["professional"])
+            else:
+                professional_profile = fps.generate_facet_p2(llm, "professional", facet_sources["professional"])
             
             print(f"✅ Professional P2 generated ({len(professional_profile.p2_prompt)} chars)")
             print(f"🔄 Running Professional BFI assessment (60 questions)...")

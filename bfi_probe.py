@@ -127,19 +127,35 @@ class LLM:
                         "messages": [{"role":"system","content":system},{"role":"user","content":user}]
                     }
                     
-                    # GPT-5 uses different parameters
-                    if self.cfg.model.startswith('gpt-5') or self.cfg.model == 'gpt-5':
+                    # Handle parameter differences between reasoning and traditional models
+                    if self.cfg.model.startswith(('gpt-5', 'o1', 'o3')):
+                        # Reasoning models use max_completion_tokens and NO sampling parameters
                         if mt is not None:
                             params["max_completion_tokens"] = mt
-                        # GPT-5 only supports default temperature (1.0) - don't include it
+                        # Do not send temperature/top_p/etc for reasoning models
                     else:
+                        # Traditional models use max_tokens and support sampling parameters
                         if mt is not None:
                             params["max_tokens"] = mt
                         if temp is not None:
                             params["temperature"] = temp
                     
+                    if self.debug:
+                        print(f"[DEBUG] API call params: {params}")
+                    
                     r = self.cli.chat.completions.create(**params)
-                    out = r.choices[0].message.content.strip()
+                    out = r.choices[0].message.content
+                    
+                    if self.debug:
+                        print(f"[DEBUG] Raw response: {repr(out)}")
+                        print(f"[DEBUG] Usage: {r.usage}")
+                        if hasattr(r.usage, 'completion_tokens_details'):
+                            print(f"[DEBUG] Reasoning tokens: {r.usage.completion_tokens_details.reasoning_tokens}")
+                    
+                    if out is None:
+                        out = ""
+                    else:
+                        out = out.strip()
                 else:
                     r = openai.ChatCompletion.create(
                         model=self.cfg.model,
@@ -175,19 +191,35 @@ class LLM:
                         "response_format": {"type":"json_object"}
                     }
                     
-                    # GPT-5 uses different parameters
-                    if self.cfg.model.startswith('gpt-5') or self.cfg.model == 'gpt-5':
+                    # Handle parameter differences between reasoning and traditional models
+                    if self.cfg.model.startswith(('gpt-5', 'o1', 'o3')):
+                        # Reasoning models use max_completion_tokens and NO sampling parameters
                         if max_tokens is not None:
                             params["max_completion_tokens"] = max_tokens
-                        # GPT-5 only supports default temperature (1.0) - don't include it
+                        # Do not send temperature/top_p/etc for reasoning models
                     else:
+                        # Traditional models use max_tokens and support sampling parameters
                         if max_tokens is not None:
                             params["max_tokens"] = max_tokens
                         if temperature is not None:
                             params["temperature"] = temperature
                     
+                    if self.debug:
+                        print(f"[DEBUG JSON] API call params: {params}")
+                    
                     r = self.cli.chat.completions.create(**params)
-                    out = r.choices[0].message.content.strip()
+                    out = r.choices[0].message.content
+                    
+                    if self.debug:
+                        print(f"[DEBUG JSON] Raw response: {repr(out)}")
+                        print(f"[DEBUG JSON] Usage: {r.usage}")
+                        if hasattr(r.usage, 'completion_tokens_details'):
+                            print(f"[DEBUG JSON] Reasoning tokens: {r.usage.completion_tokens_details.reasoning_tokens}")
+                    
+                    if out is None:
+                        out = ""
+                    else:
+                        out = out.strip()
                 else:
                     sys2 = system + " Respond with STRICT JSON only. No prose, no code fences."
                     out = self.chat(sys2, user, max_tokens=max_tokens, temperature=temperature)
@@ -363,7 +395,9 @@ def build_calibrated_p2(llm, writing_samples, platforms_used):
     
     calibrated_prompt += f"\n\nWRITING SAMPLES:\n{writing_samples}\n\nCreate a comprehensive personality profile using this structure:\n\nBIG FIVE TRAITS:\nO: [one sentence about openness]\nC: [one sentence about conscientiousness] \nE: [one sentence about extraversion]\nA: [one sentence about agreeableness]\nN: [one sentence about neuroticism]\n\nINTERESTS & PREFERENCES:\n[2-3 sentences about what this person is likely interested in, hobbies, topics they enjoy discussing]\n\nCOMMUNICATION STYLE:\n[2-3 sentences about how they typically communicate, their tone, formality level]\n\nLANGUAGE PATTERNS & EXPRESSIONS:\n[List specific phrases, words, or expressions this person commonly uses. Include how they express laughter (haha, lol, 😂, etc.), their typical greeting responses (\"hey!\", \"what's up\", \"good to see you\", etc.), and frequently used verbs or descriptive words]\n\nSOCIAL INTERACTIONS:\n[2-3 sentences about how they respond to initial greetings, their use of humor, emojis, jokes, and social engagement patterns]\n\nWORK & PRODUCTIVITY PATTERNS:\n[2-3 sentences about their approach to work, deadlines, collaboration, and productivity habits]\n\nApply platform calibration as specified above to all sections."
     
-    personality_analysis = llm.chat("You are a personality assessment expert.", calibrated_prompt, max_tokens=2000, temperature=0.2)
+    # GPT-5 needs more tokens for reasoning + comprehensive personality analysis
+    analysis_token_limit = 4000 if llm.cfg.model.startswith(('gpt-5', 'o1', 'o3')) else 2000
+    personality_analysis = llm.chat("You are a personality assessment expert.", calibrated_prompt, max_tokens=analysis_token_limit, temperature=0.2)
     
     if llm.debug:
         print(f"\n[P2 DEBUG] Requested tokens: 2000")
@@ -379,11 +413,21 @@ def build_p2(llm: LLM, tgt: Dict[str,str]) -> str:
     print("User potrait",portrait)
     return f"PERSONALITY PROMPT (P²)\n{seed}\nStyle portrait:\n{portrait}\n"
 
-def item_prompt(text: str) -> str:
-    return ("Rate how accurately the statement describes you.\n"
-            "Choose exactly one letter:\nA=Very Accurate, B=Accurate, C=Neither, D=Inaccurate, E=Very Inaccurate\n\n"
-            f"Statement: {text}\n\n"
-            "Respond with a single letter (A/B/C/D/E) and nothing else.")
+def item_prompt(text: str, reasoning_model: bool = False) -> str:
+    if reasoning_model:
+        return (f"Consider this statement: \"{text}\"\n\n"
+                "Rate how accurate this is:\n"
+                "A = Very Accurate\n"
+                "B = Accurate\n"
+                "C = Neither accurate nor inaccurate\n"
+                "D = Inaccurate\n"
+                "E = Very Inaccurate\n\n"
+                "Think about it, then respond with just the letter (A, B, C, D, or E).")
+    else:
+        return ("Rate how accurately the statement describes you.\n"
+                "Choose exactly one letter:\nA=Very Accurate, B=Accurate, C=Neither, D=Inaccurate, E=Very Inaccurate\n\n"
+                f"Statement: {text}\n\n"
+                "Respond with a single letter (A/B/C/D/E) and nothing else.")
 
 def get_platform_calibration(platform):
     """Get platform-specific calibration instructions"""
@@ -446,7 +490,9 @@ A=Very Accurate, B=Accurate, C=Neither, D=Inaccurate, E=Very Inaccurate"""
         questions_text += f"\n\nRespond with exactly {len(batch_items)} letters separated by spaces.\nFormat: A B C D E A B C D E..."
         
         # API call for this batch
-        resp = llm.chat(system, questions_text, max_tokens=200, temperature=0.0)
+        # GPT-5 needs much more tokens for reasoning + batch output
+        batch_token_limit = 1000 if llm.cfg.model.startswith(('gpt-5', 'o1', 'o3')) else 200
+        resp = llm.chat(system, questions_text, max_tokens=batch_token_limit, temperature=0.0)
         
         if llm.debug:
             print(f"\n[BATCHED] {batch_name}: Asked {len(batch_items)} questions")
@@ -467,13 +513,42 @@ A=Very Accurate, B=Accurate, C=Neither, D=Inaccurate, E=Very Inaccurate"""
     return all_answers
 
 def administer(llm, items, persona=None, as_if=None, platform=None):
-    system = "You are completing a standardized personality inventory. Answer honestly in first person. Output only A/B/C/D/E."
+    # Different system prompts for reasoning vs traditional models
+    if llm.cfg.model.startswith(('gpt-5', 'o1', 'o3')):
+        system = "You are completing a personality test. Think through each statement carefully, then respond with only a single letter (A, B, C, D, or E)."
+    else:
+        system = "You are completing a standardized personality inventory. Answer honestly in first person. Output only A/B/C/D/E."
+    
     if persona: system = persona + "\n\n" + system
     
     out={}
+    is_reasoning_model = llm.cfg.model.startswith(('gpt-5', 'o1', 'o3'))
+    
     for it in items:
-        question = item_prompt(it["text"])
-        resp = llm.chat(system, question, max_tokens=8, temperature=0.0)
+        question = item_prompt(it["text"], reasoning_model=is_reasoning_model)
+        # GPT-5 needs much more tokens for reasoning + output  
+        token_limit = 1000 if is_reasoning_model else 8
+        
+        # Retry with more tokens if we hit the limit (reasoning models only)
+        for attempt in range(3 if is_reasoning_model else 1):
+            try:
+                resp = llm.chat(system, question, max_tokens=token_limit, temperature=0.0)
+                break  # Success, exit retry loop
+            except Exception as e:
+                if is_reasoning_model and "max_tokens or model output limit" in str(e):
+                    token_limit *= 2  # Double the tokens and retry
+                    if llm.debug:
+                        print(f"[{it['id']}] Retrying with {token_limit} tokens (attempt {attempt + 2})")
+                    continue
+                else:
+                    # Not a token limit error, or not a reasoning model, re-raise
+                    raise e
+        else:
+            # All retries failed
+            resp = ""
+            if llm.debug:
+                print(f"[{it['id']}] All retries failed, using default answer 'C'")
+        
         m = re.search(r"[A-E]", resp, re.I)
         answer = (m.group(0).upper() if m else "C")
         out[it["id"]] = answer
@@ -656,8 +731,8 @@ def main():
     as_if = "\n\n".join(combined_data)
     platform = "multi" if len(platforms_used) > 1 else platforms_used[0]
     
-    # Build calibrated P2 prompt from platform data
-    p2 = build_calibrated_p2(llm, as_if, platforms_used) if as_if else "You are high in OCEAN, low in N."
+    # P2 will be built only when needed for induced mode
+    p2 = None
     
     # Load drift corrections if requested
     corrections = None
@@ -672,9 +747,15 @@ def main():
             print(f"   Run: python3 baseline_drift_correction.py --model {args.model}")
     
     if args.run in ("baseline","both"):
-        if args.batched:
+        # Disable batching for reasoning models (GPT-5, o1, o3) as they can't handle 30 questions at once
+        use_batched = args.batched and not llm.cfg.model.startswith(('gpt-5', 'o1', 'o3'))
+        
+        if use_batched:
             base_ans = administer_batched(llm, BFI_S_ITEMS, persona=None, as_if=None, platform=None)
         else:
+            if args.batched and llm.cfg.model.startswith(('gpt-5', 'o1', 'o3')):
+                print(f"⚠️  Batching disabled for {llm.cfg.model} - reasoning models can't handle 30 questions at once")
+                print("   Using individual question processing for better results")
             base_ans = administer(llm, BFI_S_ITEMS, persona=None, as_if=None, platform=None)
         base_m, base_d = score(BFI_S_ITEMS, base_ans)
         
@@ -689,7 +770,14 @@ def main():
         base_m = {t: float('nan') for t in "OCEAN"}; base_d = base_m.copy()
 
     if args.run in ("induced","both"):
-        if args.batched:
+        # Build P2 only when we need it for induced mode
+        if not p2:
+            p2 = build_calibrated_p2(llm, as_if, platforms_used) if as_if else "You are high in OCEAN, low in N."
+        
+        # Disable batching for reasoning models (GPT-5, o1, o3) as they can't handle 30 questions at once
+        use_batched = args.batched and not llm.cfg.model.startswith(('gpt-5', 'o1', 'o3'))
+        
+        if use_batched:
             ind_ans = administer_batched(llm, BFI_S_ITEMS, persona=p2, as_if=None, platform=None)
         else:
             ind_ans = administer(llm, BFI_S_ITEMS, persona=p2, as_if=None, platform=None)
@@ -709,8 +797,9 @@ def main():
     import datetime as dt
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = os.path.join(args.outdir, f"bfi_probe_{stamp}.csv")
-    with open(os.path.join(args.outdir, f"p2_prompt_{stamp}.txt"), "w", encoding="utf-8") as f:
-        f.write(p2)
+    if p2:
+        with open(os.path.join(args.outdir, f"p2_prompt_{stamp}.txt"), "w", encoding="utf-8") as f:
+            f.write(p2)
     df.to_csv(csv_path, index=False)
     
     # Save detailed question-by-question results
