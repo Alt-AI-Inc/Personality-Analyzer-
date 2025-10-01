@@ -1,0 +1,50 @@
+{
+  "sources": [
+    {
+      "name": "shreyas_tweets",
+      "type": "twitter",
+      "input_path": "Data/tweets.js",
+      "output_path": "Data/filtered_tweets.json",
+      "category": "professional",
+      "max_items": null,
+      "description": "Shreyas's Twitter posts for personality analysis"
+    },
+    {
+      "name": "shreyas_whatsapp",
+      "type": "whatsapp",
+      "input_path": "Data/Abhishek.txt",
+      "target_person": "Shreyas Srinivasan",
+      "output_path": "Data/WhatsApp.json",
+      "category": "personal",
+      "max_items": null,
+      "description": "Shreyas's WhatsApp messages for personality analysis"
+    },
+    {
+      "name": "shreyas_linkedin_messages",
+      "type": "linkedin_messages",
+      "input_path": "Data/LinkedInMessagesShreyas.csv",
+      "output_path": "Data/linkedin_messages_simple.json",
+      "category": "professional",
+      "max_items": null,
+      "description": "Shreyas's LinkedIn messages for professional personality analysis"
+    },
+    {
+      "name": "shreyas_linkedin_posts",
+      "type": "linkedin_posts",
+      "input_path": "Data/ShreyasLinkedinPosts.csv",
+      "output_path": "Data/linkedin_posts_simple.json",
+      "category": "professional",
+      "max_items": null,
+      "description": "Shreyas's LinkedIn posts for professional personality analysis"
+    },
+    {
+      "name": "abhishek_tweets",
+      "type": "twitter",
+      "input_path": "Data/Abhishek_tweets.js",
+      "output_path": "Data/Abhishek_personality_tweets.json",
+      "category": "professional",
+      "max_items": null,
+      "description": "Abhishek's Twitter posts for personality analysis"
+    }
+  ]
+}

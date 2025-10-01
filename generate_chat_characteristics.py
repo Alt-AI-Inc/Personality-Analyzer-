@@ -11,6 +11,9 @@ import argparse
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple, Set
 import os
+from process_whatsapp_data import WhatsAppProcessor
+from process_linkedin_data import LinkedInProcessor
+from bfi_probe import LLM, LLMConfig
 
 class ChatCharacteristicsGenerator:
     """Generate chat characteristics configuration from conversation analysis"""
@@ -20,32 +23,118 @@ class ChatCharacteristicsGenerator:
         self.conversation_data = []
         self.target_person_messages = []
         self.response_patterns = defaultdict(list)
+        self.facet_data = {
+            'personal': [],
+            'professional': []
+        }
         
-    def analyze_conversation_file(self, file_path: str, target_person: str) -> Dict:
-        """Analyze conversation file and extract communication patterns"""
-        print(f"📖 Analyzing conversation file: {file_path}")
-        print(f"🎯 Target person: {target_person}")
+    def analyze_from_processing_config(self, config_path: str = "processing_config.json") -> Dict:
+        """Analyze data sources from processing_config.json and generate faceted chat characteristics"""
+        print(f"📋 Loading processing configuration: {config_path}")
         
-        # Store target person for personalization
-        self.current_target_person = target_person
-        
-        # Extract messages from conversation file
-        self.conversation_data = self._parse_conversation_file(file_path)
-        print(f"📝 Found {len(self.conversation_data)} total messages")
-        
-        # Filter messages from target person
-        self.target_person_messages = [
-            msg for msg in self.conversation_data 
-            if target_person.lower() in msg['sender'].lower()
-        ]
-        print(f"🎭 Found {len(self.target_person_messages)} messages from {target_person}")
-        
-        if not self.target_person_messages:
-            print(f"❌ No messages found from {target_person}")
+        if not os.path.exists(config_path):
+            print(f"❌ Configuration file not found: {config_path}")
             return {}
         
-        # Analyze communication patterns
-        return self._generate_chat_characteristics()
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Process each source and organize by facets
+        for source in config.get('sources', []):
+            source_name = source['name']
+            source_type = source['type']
+            category = source.get('category', 'personal')
+            
+            print(f"\n📂 Processing: {source_name} ({source_type}) - {category} facet")
+            
+            try:
+                if source_type == 'whatsapp':
+                    messages = self._parse_whatsapp_messages(
+                        source['input_path'], 
+                        source['target_person']
+                    )
+                    self.facet_data[category].extend(messages)
+                    
+                elif source_type in ['linkedin_messages', 'linkedin_posts']:
+                    messages = self._parse_linkedin_content(
+                        source['input_path'],
+                        source_type
+                    )
+                    self.facet_data[category].extend(messages)
+                    
+            except Exception as e:
+                print(f"⚠️  Error processing {source_name}: {e}")
+                continue
+        
+        # Generate characteristics for each facet
+        results = {}
+        for facet, messages in self.facet_data.items():
+            if messages:
+                print(f"\n🎭 Generating {facet} facet characteristics ({len(messages)} messages)")
+                results[facet] = self._generate_facet_characteristics(facet, messages)
+            else:
+                print(f"⚠️  No {facet} messages found")
+        
+        return results
+    
+    def _parse_whatsapp_messages(self, file_path: str, target_person: str) -> List[str]:
+        """Parse WhatsApp messages from target person"""
+        messages = []
+        
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        # WhatsApp pattern: [YYYY/MM/DD, HH:MM:SS] Name: Message
+        pattern = r'\[(\d{4}/\d{1,2}/\d{1,2}),?\s+(\d{1,2}:\d{2}:\d{2})\]\s+([^:]+?):\s+(.*?)(?=\n\[|\Z)'
+        matches = re.findall(pattern, content, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            date_str, time_str, sender, message = match
+            
+            # Clean up message content
+            message = message.strip().replace('\n', ' ')
+            
+            # Skip corrupted/invalid messages
+            if not message or self._is_corrupted_message(message):
+                continue
+            
+            # Filter messages from target person
+            if target_person.lower() in sender.lower():
+                messages.append(message)
+        
+        print(f"    📝 Found {len(messages)} WhatsApp messages from {target_person}")
+        return messages
+    
+    def _parse_linkedin_content(self, file_path: str, content_type: str) -> List[str]:
+        """Parse LinkedIn messages or posts"""
+        messages = []
+        
+        import csv
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            csv_reader = csv.DictReader(f)
+            
+            for row in csv_reader:
+                content = None
+                
+                if content_type == 'linkedin_messages':
+                    # Try different column names for LinkedIn messages
+                    for col_name in ['Message', 'Content', 'Text', 'Body', 'CONTENT', 'MESSAGE']:
+                        if col_name in row and row[col_name]:
+                            content = row[col_name].strip()
+                            break
+                            
+                elif content_type == 'linkedin_posts':
+                    # Try different column names for LinkedIn posts
+                    for col_name in ['Post', 'Content', 'ShareCommentary', 'Description', 'Body']:
+                        if col_name in row and row[col_name]:
+                            content = row[col_name].strip()
+                            break
+                
+                if content and not self._is_corrupted_message(content):
+                    messages.append(content)
+        
+        print(f"    📝 Found {len(messages)} {content_type.replace('_', ' ')}")
+        return messages
     
     def _parse_conversation_file(self, file_path: str) -> List[Dict]:
         """Parse WhatsApp conversation file into structured format"""
@@ -101,23 +190,229 @@ class ChatCharacteristicsGenerator:
             
         return False
     
-    def _generate_chat_characteristics(self) -> Dict:
-        """Generate complete chat characteristics configuration"""
-        print("🔍 Analyzing communication patterns...")
+    def _generate_facet_characteristics(self, facet: str, messages: List[str]) -> Dict:
+        """Generate facet-specific chat characteristics configuration"""
+        print(f"🔍 Analyzing {facet} communication patterns...")
         
-        # Get target person name for personalization
-        target_person = getattr(self, 'current_target_person', '')
+        # Convert messages to the format expected by existing methods
+        self.target_person_messages = [{'message': msg} for msg in messages]
         
+        # Generate facet-specific characteristics
         characteristics = {
-            "general_conversation": self._analyze_general_conversation_style(),
-            "greeting_response": self._analyze_greeting_patterns(),
-            "philosophical_response": self._analyze_philosophical_patterns(),
-            "template_reinforcement": self._generate_reinforcement_config(target_person),
+            "facet": facet,
+            "general_conversation": self._analyze_general_conversation_style_faceted(facet),
+            "greeting_response": self._analyze_greeting_patterns_faceted(facet),
+            "philosophical_response": self._analyze_philosophical_patterns_faceted(facet),
+            "template_reinforcement": self._generate_reinforcement_config_faceted(facet),
             "detection_patterns": self._analyze_detection_patterns(),
-            "settings": self._generate_optimal_settings()
+            "settings": self._generate_optimal_settings_faceted(facet)
         }
         
         return characteristics
+    
+    def _analyze_general_conversation_style_faceted(self, facet: str) -> Dict:
+        """Analyze general conversation flow and style for specific facet"""
+        print(f"  📋 Analyzing {facet} conversation style...")
+        
+        # Analyze response lengths
+        word_counts = [len(msg['message'].split()) for msg in self.target_person_messages]
+        avg_length = sum(word_counts) / len(word_counts) if word_counts else 0
+        
+        # Analyze common starting words/phrases  
+        starting_words = [msg['message'].split()[0].lower() for msg in self.target_person_messages 
+                         if msg['message'].split()]
+        common_starters = Counter(starting_words).most_common(10)
+        
+        # Analyze conversation flow patterns
+        flow_patterns = self._extract_conversation_flow_patterns()
+        
+        # Generate facet-specific system prompt
+        system_prompt = self._generate_facet_system_prompt(facet, avg_length, common_starters, flow_patterns)
+        
+        return {
+            "system_prompt": system_prompt,
+            "facet_context": facet,
+            "avg_word_count": avg_length,
+            "common_starters": [word for word, count in common_starters[:5]]
+        }
+    
+    def _generate_facet_system_prompt(self, facet: str, avg_length: float, common_starters: List[Tuple], 
+                                     flow_patterns: List[str]) -> str:
+        """Generate facet-specific system prompt based on conversation analysis"""
+        
+        # Base prompt with facet context
+        if facet == "professional":
+            prompt = f"You are now engaging in a professional conversation. Respond naturally based on your {facet} personality profile above.\n\n"
+            prompt += "PROFESSIONAL COMMUNICATION STYLE:\n"
+            prompt += "- Maintain professional tone while staying authentic to your personality\n"
+            prompt += "- Draw from your work experiences, business insights, and industry knowledge\n"
+            prompt += "- Show leadership thinking, strategic perspectives, and solution-oriented mindset\n"
+            prompt += "- Reference professional relationships, team dynamics, and business challenges naturally\n"
+        else:  # personal
+            prompt = f"You are now engaging in a personal conversation. Respond naturally based on your {facet} personality profile above.\n\n"
+            prompt += "PERSONAL COMMUNICATION STYLE:\n"
+            prompt += "- Be more casual and emotionally open than in professional settings\n"
+            prompt += "- Draw from personal experiences, relationships, hobbies, and lifestyle choices\n"
+            prompt += "- Show authentic emotional reactions and personal opinions\n"
+            prompt += "- Reference friends, family, personal interests, and life experiences naturally\n"
+        
+        # Add common patterns
+        prompt += "- Stay in character based on your personality traits and communication style\n"
+        prompt += "- Be conversational and authentic to your profile\n"
+        prompt += "- Use the language patterns and expressions from your profile when appropriate\n"
+        prompt += f"- Let your current state subtly affect your response energy, focus, and conversational approach\n\n"
+        
+        # Add sophisticated conversation flow patterns
+        prompt += "NATURAL CONVERSATION FLOW:\n"
+        prompt += "- Mix personal thoughts/observations naturally into discussions without explicit bridges\n"
+        prompt += "- Use \"Yeah\" or \"Ok\" acknowledgments followed by redirections rather than comprehensive responses\n"
+        prompt += "- Ask questions that assume context or jump to practical next steps instead of predictable follow-ups\n"
+        
+        if facet == "professional":
+            prompt += "- Reference work experiences, business strategies, or industry insights as natural conversation elements\n"
+            prompt += "- Sometimes pivot to strategic thinking or business implications\n"
+        else:
+            prompt += "- Reference personal experiences, family, or interests as natural conversation elements\n"
+            prompt += "- Sometimes leave thoughts unfinished, assuming the other person will fill in context\n"
+        
+        prompt += "- Jump between macro and micro concerns without clear transitions\n"
+        
+        # Add brevity if detected
+        if avg_length < 15 or any("brief" in pattern for pattern in flow_patterns):
+            prompt += "- Keep responses concise and to the point\n"
+            prompt += "- Prefer brief, direct responses over lengthy explanations\n"
+        
+        prompt += f"\nKeep responses natural and authentic to your {facet} personality profile."
+        
+        return prompt
+    
+    def _analyze_greeting_patterns_faceted(self, facet: str) -> Dict:
+        """Analyze greeting response patterns for specific facet"""
+        print(f"  👋 Analyzing {facet} greeting patterns...")
+        
+        # Find greeting messages (reuse existing logic)
+        greeting_keywords = ['hey', 'hi', 'hello', 'good morning', 'good afternoon', 'good evening']
+        greeting_messages = []
+        
+        for msg in self.target_person_messages:
+            msg_lower = msg['message'].lower()
+            if any(greeting in msg_lower for greeting in greeting_keywords):
+                if self._is_proper_greeting(msg['message']):
+                    greeting_messages.append(msg['message'])
+        
+        print(f"    Found {len(greeting_messages)} {facet} greeting messages")
+        
+        # Facet-specific greeting template
+        if facet == "professional":
+            template_header = f"\nPROFESSIONAL GREETING RESPONSE TEMPLATE:\n{{greeting_template}}\n\nIMPORTANT: The user sent a greeting message in a professional context. You MUST follow the greeting response template above."
+            instructions = [
+                "Start with \"Hey\" but maintain professional warmth",
+                "Use professional check-in patterns: work projects, business updates, industry insights",
+                "Keep it brief but show professional engagement",
+                "Reference work context naturally if appropriate"
+            ]
+        else:  # personal
+            template_header = f"\nPERSONAL GREETING RESPONSE TEMPLATE:\n{{greeting_template}}\n\nIMPORTANT: The user sent a greeting message in a personal context. You MUST follow the greeting response template above."
+            instructions = [
+                "Start with \"Hey\" in a casual, friendly manner",
+                "Use personal check-in patterns: life updates, personal interests, casual topics",
+                "Keep it brief and friendly",
+                "Reference personal experiences or shared interests naturally"
+            ]
+        
+        return {
+            "template_header": template_header,
+            "instructions": instructions,
+            "facet_context": facet
+        }
+    
+    def _analyze_philosophical_patterns_faceted(self, facet: str) -> Dict:
+        """Analyze philosophical/thoughtful response patterns for specific facet"""
+        print(f"  🤔 Analyzing {facet} philosophical response patterns...")
+        
+        # Find philosophical messages (reuse existing logic but adapt for facet)
+        philosophical_keywords = [
+            'think', 'opinion', 'believe', 'feel', 'perspective', 'view',
+            'approach', 'strategy', 'should', 'would', 'could', 'might'
+        ]
+        
+        philosophical_messages = []
+        for msg in self.target_person_messages:
+            msg_lower = msg['message'].lower()
+            if (any(word in msg_lower for word in philosophical_keywords) and 
+                ('?' in msg['message'] or len(msg['message'].split()) > 5)):
+                philosophical_messages.append(msg['message'])
+        
+        print(f"    Found {len(philosophical_messages)} {facet} philosophical messages")
+        
+        # Analyze thinking markers
+        thinking_markers = self._extract_thinking_markers(philosophical_messages)
+        
+        # Calculate average length
+        word_counts = [len(msg.split()) for msg in philosophical_messages]
+        avg_phil_length = sum(word_counts) / len(word_counts) if word_counts else 0
+        
+        # Facet-specific philosophical response configuration
+        if facet == "professional":
+            template_header = f"\nPROFESSIONAL PHILOSOPHICAL/STRATEGIC QUESTION RESPONSE TEMPLATE:\n{{philosophical_template}}\n\n🚨 OVERRIDE ALL OTHER INSTRUCTIONS: Maximum 8 words TOTAL. 🚨\n\nFOR BUSINESS/STRATEGIC QUESTIONS ONLY:"
+        else:
+            template_header = f"\nPERSONAL PHILOSOPHICAL/OPEN-ENDED QUESTION RESPONSE TEMPLATE:\n{{philosophical_template}}\n\n🚨 OVERRIDE ALL OTHER INSTRUCTIONS: Maximum 8 words TOTAL. 🚨\n\nFOR PERSONAL PHILOSOPHICAL QUESTIONS ONLY:"
+        
+        return {
+            "template_header": template_header,
+            "override_instructions": [
+                "IGNORE all \"natural conversation flow\" instructions",
+                "IGNORE \"ask follow-up questions\" instructions",
+                "IGNORE \"add personal thoughts\" instructions", 
+                "IGNORE \"pivot to related topics\" instructions"
+            ],
+            "mandatory_rules": {
+                "brevity_rule": f"Exactly 4-8 words. No exceptions. (Analyzed avg: {avg_phil_length:.1f} words)",
+                "format": "[Thinking marker] + [brief insight] + \"right?\"",
+                "examples": self._generate_philosophical_examples(thinking_markers)
+            },
+            "facet_context": facet,
+            "final_instruction": f"Before responding to {facet} philosophical questions, COUNT each word. Must be ≤8 words."
+        }
+    
+    def _generate_reinforcement_config_faceted(self, facet: str) -> Dict:
+        """Generate facet-specific template reinforcement configuration"""
+        return {
+            "header": f"\n\n🚨 TEMPLATE REINFORCEMENT - CRITICAL REMINDER 🚨\n\n{{template_context}}\n\nRemember: This is {facet} facet responding. Maximum 8 words for philosophical questions. Count each word before responding.",
+            "examples": [
+                "\"Hmmm makes sense, right?\" (4 words)",
+                "\"Actually sounds good\" (3 words)"
+            ],
+            "global_constraint": f"GLOBAL CONSTRAINT for {facet} facet: Your reply must be ≤ 8 words for philosophical questions. Never exceed 8 words. If unsure, answer with fewer words.",
+            "facet_context": facet
+        }
+    
+    def _generate_optimal_settings_faceted(self, facet: str) -> Dict:
+        """Generate optimal settings based on facet-specific analysis"""
+        
+        # Calculate average message length for token estimation
+        word_counts = [len(msg['message'].split()) for msg in self.target_person_messages]
+        avg_words = sum(word_counts) / len(word_counts) if word_counts else 8
+        
+        # Estimate tokens (roughly 1.3 words per token)
+        philosophical_tokens = min(50, max(20, int(avg_words * 1.3 * 1.5)))  # 1.5x buffer
+        
+        # Facet-specific token adjustments
+        if facet == "professional":
+            general_tokens = 400  # Professional responses might be longer
+            context_tokens = 40000  # More context for business discussions
+        else:
+            general_tokens = 300  # Personal responses typically shorter
+            context_tokens = 32000  # Standard context for personal chats
+        
+        return {
+            "max_context_tokens": context_tokens,
+            "template_reinforcement_interval": 3000,
+            "max_tokens_philosophical": philosophical_tokens,
+            "max_tokens_general": general_tokens,
+            "temperature": 0.2,
+            "facet_context": facet
+        }
     
     def _analyze_general_conversation_style(self) -> Dict:
         """Analyze general conversation flow and style"""
@@ -488,8 +783,23 @@ class ChatCharacteristicsGenerator:
             "temperature": 0.2
         }
     
+    def save_faceted_characteristics(self, faceted_characteristics: Dict, output_base_path: str):
+        """Save faceted characteristics to separate JSON files"""
+        
+        for facet, characteristics in faceted_characteristics.items():
+            facet_output_path = output_base_path.replace('.json', f'_{facet}.json')
+            print(f"💾 Saving {facet} chat characteristics to: {facet_output_path}")
+            
+            with open(facet_output_path, 'w', encoding='utf-8') as f:
+                json.dump(characteristics, f, indent=2, ensure_ascii=False)
+            
+            print(f"✅ {facet.title()} chat characteristics saved successfully!")
+            
+            # Print facet-specific summary
+            self._print_facet_analysis_summary(characteristics, facet)
+    
     def save_characteristics(self, characteristics: Dict, output_path: str):
-        """Save characteristics to JSON file"""
+        """Save characteristics to JSON file (legacy method)"""
         print(f"💾 Saving chat characteristics to: {output_path}")
         
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -521,49 +831,97 @@ class ChatCharacteristicsGenerator:
         print(f"📏 Avg philosophical length: {phil.get('avg_philosophical_length', 'N/A')} words")
         
         print("=" * 50)
+    
+    def _print_facet_analysis_summary(self, characteristics: Dict, facet: str):
+        """Print facet-specific analysis summary"""
+        print(f"\n📊 {facet.upper()} FACET ANALYSIS SUMMARY:")
+        print("=" * 50)
+        
+        general = characteristics.get("general_conversation", {})
+        print(f"📝 Average word count: {general.get('avg_word_count', 'N/A')}")
+        print(f"🎯 Common starters: {', '.join(general.get('common_starters', [])[:3])}")
+        
+        settings = characteristics.get("settings", {})
+        print(f"⚙️  Philosophical tokens: {settings.get('max_tokens_philosophical', 'N/A')}")
+        print(f"⚙️  General tokens: {settings.get('max_tokens_general', 'N/A')}")
+        
+        greeting = characteristics.get("greeting_response", {})
+        print(f"👋 Greeting context: {greeting.get('facet_context', facet)}")
+        
+        phil = characteristics.get("philosophical_response", {})
+        print(f"🤔 Philosophical context: {phil.get('facet_context', facet)}")
+        
+        print(f"🎭 Facet: {facet}")
+        print("=" * 50)
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate chat characteristics from conversation analysis")
-    parser.add_argument("--conversation-file", type=str, required=True,
-                       help="Path to conversation file (e.g., Data/Abhishek.txt)")
-    parser.add_argument("--target-person", type=str, required=True,
-                       help="Name of person to analyze (e.g., 'Shreyas Srinivasan')")
-    parser.add_argument("--output", type=str, default="chat_characteristics_generated.json",
-                       help="Output path for generated characteristics")
+    parser = argparse.ArgumentParser(description="Generate faceted chat characteristics from processing configuration")
+    parser.add_argument("--config", type=str, default="processing_config.json",
+                       help="Path to processing configuration file")
+    parser.add_argument("--output", type=str, default="chat_characteristics.json",
+                       help="Base output path for generated characteristics (will create _personal.json and _professional.json)")
     parser.add_argument("--debug", action="store_true",
                        help="Enable debug output")
     
-    args = parser.parse_args()
+    # Legacy support for single conversation file
+    parser.add_argument("--conversation-file", type=str, 
+                       help="Path to single conversation file (legacy mode)")
+    parser.add_argument("--target-person", type=str,
+                       help="Name of person to analyze (legacy mode)")
     
-    # Validate input file
-    if not os.path.exists(args.conversation_file):
-        print(f"❌ Conversation file not found: {args.conversation_file}")
-        return
+    args = parser.parse_args()
     
     # Initialize generator
     generator = ChatCharacteristicsGenerator(debug=args.debug)
     
-    # Analyze conversation and generate characteristics
-    print("🚀 Starting chat characteristics generation...")
+    print("🚀 Starting faceted chat characteristics generation...")
     print("=" * 60)
     
     try:
-        characteristics = generator.analyze_conversation_file(
-            args.conversation_file, 
-            args.target_person
-        )
-        
-        if not characteristics:
-            print("❌ Failed to generate characteristics - no data found")
-            return
-        
-        # Save results
-        generator.save_characteristics(characteristics, args.output)
-        
-        print(f"\n🎉 SUCCESS! Generated chat characteristics from conversation analysis")
-        print(f"📁 Output file: {args.output}")
-        print(f"🎭 Analyzed: {args.target_person}")
-        print(f"📖 Source: {args.conversation_file}")
+        # Check if using legacy mode or new faceted mode
+        if args.conversation_file and args.target_person:
+            print("🔄 Using legacy single-file mode")
+            
+            # Validate input file
+            if not os.path.exists(args.conversation_file):
+                print(f"❌ Conversation file not found: {args.conversation_file}")
+                return
+            
+            characteristics = generator.analyze_conversation_file(
+                args.conversation_file, 
+                args.target_person
+            )
+            
+            if not characteristics:
+                print("❌ Failed to generate characteristics - no data found")
+                return
+            
+            generator.save_characteristics(characteristics, args.output)
+            print(f"📁 Output file: {args.output}")
+            
+        else:
+            print("🎭 Using faceted analysis mode from processing configuration")
+            
+            # Validate config file
+            if not os.path.exists(args.config):
+                print(f"❌ Configuration file not found: {args.config}")
+                print("   Create a processing_config.json file or use --conversation-file for legacy mode")
+                return
+            
+            # Analyze from processing config
+            faceted_characteristics = generator.analyze_from_processing_config(args.config)
+            
+            if not faceted_characteristics:
+                print("❌ Failed to generate characteristics - no data sources found")
+                return
+            
+            # Save faceted results
+            generator.save_faceted_characteristics(faceted_characteristics, args.output)
+            
+            print(f"\n🎉 SUCCESS! Generated faceted chat characteristics")
+            print(f"📋 Configuration: {args.config}")
+            print(f"📁 Output files: {args.output.replace('.json', '_personal.json')}, {args.output.replace('.json', '_professional.json')}")
+            print(f"🎭 Facets generated: {', '.join(faceted_characteristics.keys())}")
         
     except Exception as e:
         print(f"❌ Error during generation: {e}")
