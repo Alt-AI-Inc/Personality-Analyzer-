@@ -7,6 +7,11 @@ Creates an AI that talks like you, with separate personalities for work and pers
 - Python 3.8+
 - OpenAI API key set in environment (`OPENAI_API_KEY`)
 
+### Install Required Packages
+```bash
+pip install openai pandas numpy
+```
+
 ## Quick Setup (5 Steps)
 
 ### Step 1: Put Your Data in the `Data/` folder
