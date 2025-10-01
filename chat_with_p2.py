@@ -41,7 +41,7 @@ class P2ChatSession:
         "feeling motivated to tackle new challenges"
     ]
     
-    def __init__(self, p2_prompt: str, llm: LLM, debug: bool = False, mood: str = None, chat_characteristics_path: str = "chat_characteristics.json"):
+    def __init__(self, p2_prompt: str, llm: LLM, debug: bool = False, mood: str = None, chat_characteristics_path: str = "chat_characteristics.json", scenario: str = None, person_name: str = None):
         self.p2_prompt = p2_prompt
         self.llm = llm
         self.debug = debug
@@ -49,6 +49,8 @@ class P2ChatSession:
         self.current_mood = mood if mood else random.choice(self.MOOD_SCENARIOS)
         self.rejection_history = []  # Track rejected responses for learning
         self.chat_characteristics_path = chat_characteristics_path
+        self.scenario = scenario
+        self.person_name = person_name if person_name else self._extract_person_name_from_p2()
         self.communication_style_extracted = self._extract_communication_style_from_p2()
         
         # Load response templates and characteristics
@@ -64,6 +66,7 @@ class P2ChatSession:
         self.template_reinforcement_interval = settings.get("template_reinforcement_interval", 3000)
         self.max_tokens_philosophical = settings.get("max_tokens_philosophical", 50)
         self.max_tokens_general = settings.get("max_tokens_general", 300)
+        self.max_tokens_initial = settings.get("max_tokens_initial", 100)
         self.temperature = settings.get("temperature", 0.2)
         self.last_reinforcement_tokens = 0
         self.template_adherence_scores = []  # Track performance over time
@@ -71,10 +74,15 @@ class P2ChatSession:
         # Build the system prompt with characteristics from JSON file
         general_conversation = self.chat_characteristics.get("general_conversation", {})
         conversation_prompt = general_conversation.get("system_prompt", "")
-        
+
+        # Build scenario context if provided
+        scenario_context = ""
+        if self.scenario:
+            scenario_context = f"\n\nCONVERSATION SCENARIO: {self.scenario}\nYou are {self.person_name} in this scenario. Respond naturally based on this context and your personality."
+
         self.system_prompt = f"""{p2_prompt}
 
-CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influence your tone and energy level, but don't explicitly mention this state unless it naturally fits the conversation.
+CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influence your tone and energy level, but don't explicitly mention this state unless it naturally fits the conversation.{scenario_context}
 
 {conversation_prompt}"""
     
@@ -110,6 +118,59 @@ CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influenc
                 print(f"⚠️  Chat characteristics file not found: {self.chat_characteristics_path}")
             return {}
     
+    def send_initial_message(self) -> str:
+        """Generate and send an initial message to start the conversation"""
+        initial_config = self.chat_characteristics.get("initial_message", {})
+
+        if not initial_config.get("enabled", True):
+            return None
+
+        instructions = initial_config.get("instructions", "")
+        examples = initial_config.get("examples", [])
+
+        # Build initial message prompt
+        scenario_context = ""
+        if self.scenario:
+            scenario_context = f"\n\nSCENARIO CONTEXT: {self.scenario}\nGenerate an opening message appropriate for this scenario."
+
+        examples_text = ""
+        if examples:
+            examples_text = "\n\nEXAMPLES:\n" + "\n".join(f"- {ex}" for ex in examples)
+
+        user_prompt = f"""Generate a natural opening message to start this conversation.
+
+{instructions}{scenario_context}{examples_text}
+
+IMPORTANT:
+- Do NOT include your name in the message
+- Just provide the greeting/opening message text directly
+- Keep it brief (1-2 sentences), authentic to your personality, and natural."""
+
+        try:
+            response = self.llm.chat(
+                self.system_prompt,
+                user_prompt,
+                max_tokens=self.max_tokens_initial,
+                temperature=self.temperature
+            )
+
+            response = response.strip()
+
+            # Clean up response if it includes the person's name at the start
+            # Pattern: "Name: message" -> "message"
+            if response.startswith(f"{self.person_name}:"):
+                response = response[len(f"{self.person_name}:"):].strip()
+
+            # Add to conversation history
+            self.conversation_history.append({"role": "assistant", "content": response})
+
+            return response
+
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error generating initial message: {e}")
+            return None
+
     def _is_greeting_message(self, message: str) -> bool:
         """Detect if a message is a greeting"""
         message_lower = message.lower().strip()
@@ -328,7 +389,7 @@ CURRENT CONTEXT: You are currently {self.current_mood}. Let this subtly influenc
             else:
                 # Compress assistant responses to prevent verbosity reinforcement
                 compressed_response = self._compress_assistant_response(msg['content'], is_philosophical)
-                conversation.append(f"Me: {compressed_response}")
+                conversation.append(f"{self.person_name}: {compressed_response}")
         
         conversation_context = "\n".join(conversation)
         
@@ -420,13 +481,16 @@ Don't feel obligated to address everything directly - follow your natural commun
     
     def start_interactive_chat(self):
         """Start the interactive chat loop"""
-        print("🤖 P2 Personality Chat Session")
+        print(f"🤖 P2 Personality Chat Session - Chatting with {self.person_name}")
         print("=" * 50)
         print("Type your messages and press Enter.")
         print("Commands: '/help' for help, '/quit' to exit, '/history' to see conversation")
         print("=" * 50)
         print("💡 Enhanced with natural conversation flow - expect authentic, non-linear responses!")
         print("=" * 50)
+        if self.scenario:
+            print(f"📝 Scenario: {self.scenario}")
+            print("=" * 50)
         print(f"🎭 Current mood context: {self.current_mood}")
         print("   (This subtly influences conversation tone)")
         print("=" * 50)
@@ -440,9 +504,14 @@ Don't feel obligated to address everything directly - follow your natural commun
             print("\n[DEBUG] Personality Profile Preview:")
             print(self.p2_prompt[:300] + "..." if len(self.p2_prompt) > 300 else self.p2_prompt)
             print("-" * 50)
-        
-        print("\n💬 Chat started! Say hello or ask me anything...")
-        
+
+        # Send initial message if enabled
+        initial_message = self.send_initial_message()
+        if initial_message:
+            print(f"\n🤖 {self.person_name}: {initial_message}")
+        else:
+            print("\n💬 Chat started! Say hello or ask me anything...")
+
         while True:
             try:
                 # Get user input
@@ -474,6 +543,9 @@ Don't feel obligated to address everything directly - follow your natural commun
                 elif user_input.lower() in ['/newmood', '/nm']:
                     self.change_mood()
                     continue
+                elif user_input.lower() in ['/scenario', '/s']:
+                    self.show_scenario()
+                    continue
                 elif user_input.lower() in ['/rejections', '/r']:
                     self.show_rejection_history()
                     continue
@@ -482,7 +554,7 @@ Don't feel obligated to address everything directly - follow your natural commun
                     continue
                 
                 # Get AI response
-                print("🤖 Me: ", end="", flush=True)
+                print(f"🤖 {self.person_name}: ", end="", flush=True)
                 response = self.chat_response(user_input)
                 print(response)
                 
@@ -500,11 +572,12 @@ Don't feel obligated to address everything directly - follow your natural commun
         print("\n📋 Available Commands:")
         print("  /quit, /exit, /q    - End the chat session")
         print("  /help, /h           - Show this help")
-        print("  /history, /hist     - Show conversation history")  
+        print("  /history, /hist     - Show conversation history")
         print("  /personality, /p2   - Show personality profile summary")
         print("  /clear, /reset      - Clear conversation history")
         print("  /mood, /m           - Show current mood context")
         print("  /newmood, /nm       - Change to a new random mood")
+        print("  /scenario, /s       - Show current scenario context")
         print("  /rejections, /r     - Show response rejection history (debug)")
         print("  /bad, /b            - Flag last response as bad and get a new one")
         print("  Just type normally  - Chat with the AI")
@@ -514,12 +587,12 @@ Don't feel obligated to address everything directly - follow your natural commun
         if not self.conversation_history:
             print("\n📝 No conversation history yet.")
             return
-        
+
         print(f"\n📝 Conversation History ({len(self.conversation_history)} messages):")
         print("-" * 30)
         for i, msg in enumerate(self.conversation_history, 1):
             role_icon = "🫵" if msg["role"] == "user" else "🤖"
-            role_name = "You" if msg["role"] == "user" else "Me"
+            role_name = "You" if msg["role"] == "user" else self.person_name
             print(f"{i:2d}. {role_icon} {role_name}: {msg['content']}")
         print("-" * 30)
     
@@ -559,17 +632,29 @@ Don't feel obligated to address everything directly - follow your natural commun
         # Pick a different mood than current
         available_moods = [m for m in self.MOOD_SCENARIOS if m != self.current_mood]
         self.current_mood = random.choice(available_moods)
-        
+
         # Update system prompt with new mood
         self.system_prompt = self.system_prompt.replace(
             f"You are currently {old_mood}",
             f"You are currently {self.current_mood}"
         )
-        
+
         print(f"\n🔄 Mood changed!")
         print(f"   From: {old_mood}")
         print(f"   To: {self.current_mood}")
         print("   The conversation tone will subtly shift.")
+
+    def show_scenario(self):
+        """Show current scenario context"""
+        if self.scenario:
+            print(f"\n📝 Conversation Scenario:")
+            print("-" * 60)
+            print(f"{self.scenario}")
+            print("-" * 60)
+            print(f"You are talking to {self.person_name} in this context.")
+        else:
+            print("\n📝 No scenario set for this conversation.")
+            print("   Use --scenario 'text' or --scenario-file 'path/to/file.txt' when starting the chat.")
     
     def show_rejection_history(self):
         """Show history of rejected responses for debugging"""
@@ -644,15 +729,15 @@ Don't feel obligated to address everything directly - follow your natural commun
         
         print("✅ Bad response flagged and removed from history")
         print("🔄 Generating new response...")
-        
+
         # Generate a new response
         new_response = self.chat_response(last_user_message)
-        
+
         # Remove the duplicate user message that chat_response added
         if len(self.conversation_history) >= 2 and self.conversation_history[-2]["content"] == last_user_message:
             del self.conversation_history[-2]
-        
-        print(f"🤖 New response: {new_response}")
+
+        print(f"🤖 {self.person_name}: {new_response}")
     
     def _get_user_annotation(self, user_message: str, ai_response: str, rejection_reason: str) -> str:
         """Get user annotation for rejected response"""
@@ -671,12 +756,39 @@ Don't feel obligated to address everything directly - follow your natural commun
             print("   (skipped)")
             return ""
     
+    def _extract_person_name_from_p2(self) -> str:
+        """Extract person name from P2 prompt"""
+        lines = self.p2_prompt.split('\n')
+
+        # Look for patterns like "You are [Name]" or mentions of a name
+        for line in lines[:10]:  # Check first 10 lines
+            if 'you are' in line.lower():
+                # Extract name after "you are"
+                parts = line.lower().split('you are')
+                if len(parts) > 1:
+                    name_part = parts[1].strip().rstrip('.,!')
+                    # Get first word which is likely the name
+                    name = name_part.split()[0] if name_part.split() else None
+                    if name and name not in ['a', 'an', 'the']:
+                        return name.capitalize()
+
+        # Fallback: Look for capitalized words that might be names
+        for line in lines[:5]:
+            words = line.split()
+            for word in words:
+                if word[0].isupper() and len(word) > 2 and word.isalpha():
+                    # Skip common words
+                    if word.lower() not in ['the', 'you', 'are', 'this', 'profile', 'personality', 'assessment', 'big', 'five']:
+                        return word
+
+        return "the AI"
+
     def _extract_communication_style_from_p2(self) -> str:
         """Extract communication style section from P2 prompt"""
         lines = self.p2_prompt.split('\n')
         style_section = []
         in_style_section = False
-        
+
         for line in lines:
             if 'COMMUNICATION STYLE ANALYSIS:' in line.upper():
                 in_style_section = True
@@ -686,7 +798,7 @@ Don't feel obligated to address everything directly - follow your natural commun
                     style_section.append(line.strip())
                 elif line.startswith('ASSESSMENT CONTEXT') or not line.strip() and len(style_section) > 5:
                     break
-        
+
         return '\n'.join(style_section) if style_section else "No specific communication style found"
     
     def _validate_response_style(self, user_message: str, ai_response: str) -> tuple[bool, str]:
@@ -782,13 +894,27 @@ def load_p2_profile(file_path: str) -> Optional[str]:
     """Load P2 profile from file"""
     if not os.path.exists(file_path):
         return None
-    
+
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
         return content
     except Exception as e:
         print(f"❌ Error loading P2 profile: {e}")
+        return None
+
+def load_scenario_from_file(file_path: str) -> Optional[str]:
+    """Load scenario from text file"""
+    if not os.path.exists(file_path):
+        print(f"❌ Scenario file not found: {file_path}")
+        return None
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        return content
+    except Exception as e:
+        print(f"❌ Error loading scenario file: {e}")
         return None
 
 def list_available_p2_files(directory: str = "results") -> list:
@@ -806,14 +932,17 @@ def list_available_p2_files(directory: str = "results") -> list:
 def main():
     ap = argparse.ArgumentParser(description="Interactive Chat with P2 Personality Profile")
     ap.add_argument("--p2-file", type=str, help="Path to P2 personality profile file")
-    ap.add_argument("--model", type=str, default="gpt-4o-mini", 
+    ap.add_argument("--model", type=str, default="gpt-4o-mini",
                    choices=["gpt-4o-mini", "gpt-4o", "gpt-5"])
     ap.add_argument("--debug", action="store_true", help="Enable debug output")
     ap.add_argument("--list-p2", action="store_true", help="List available P2 files and exit")
     ap.add_argument("--mood", type=str, help="Set specific mood context (otherwise random)")
     ap.add_argument("--chat-characteristics", type=str, default="chat_characteristics.json",
                    help="Path to chat characteristics JSON file (default: chat_characteristics.json)")
-    
+    ap.add_argument("--scenario", type=str, help="Conversation scenario context as string (e.g., 'catching up over coffee')")
+    ap.add_argument("--scenario-file", type=str, help="Path to text file containing scenario context (overrides --scenario)")
+    ap.add_argument("--name", type=str, help="Person name (auto-extracted from P2 profile if not provided)")
+
     args = ap.parse_args()
     
     # List available P2 files if requested
@@ -868,13 +997,33 @@ def main():
         return
     
     print(f"✅ Loaded P2 profile: {os.path.basename(args.p2_file)} ({len(p2_prompt)} chars)")
-    
+
+    # Handle scenario loading (file takes precedence over string)
+    scenario = None
+    if args.scenario_file:
+        scenario = load_scenario_from_file(args.scenario_file)
+        if scenario:
+            print(f"✅ Loaded scenario from file: {os.path.basename(args.scenario_file)} ({len(scenario)} chars)")
+        else:
+            print("⚠️  Failed to load scenario file, continuing without scenario")
+    elif args.scenario:
+        scenario = args.scenario
+        print(f"✅ Using scenario: {scenario[:60]}{'...' if len(scenario) > 60 else ''}")
+
     # Initialize LLM
     cfg = LLMConfig(model=args.model, temperature=0.8, max_tokens=300)
     llm = LLM(cfg, debug=args.debug)
-    
-    # Start chat session with optional mood
-    chat_session = P2ChatSession(p2_prompt, llm, debug=args.debug, mood=args.mood, chat_characteristics_path=args.chat_characteristics)
+
+    # Start chat session with optional mood, scenario, and name
+    chat_session = P2ChatSession(
+        p2_prompt,
+        llm,
+        debug=args.debug,
+        mood=args.mood,
+        chat_characteristics_path=args.chat_characteristics,
+        scenario=scenario,
+        person_name=args.name
+    )
     chat_session.start_interactive_chat()
 
 if __name__ == "__main__":
